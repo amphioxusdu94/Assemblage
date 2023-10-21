@@ -27,7 +27,7 @@ from statistics import stdev
 import textwrap
 import matplotlib.pyplot as plt
 matplotlib.use("Agg")
-from Bio import SeqIO
+#from Bio import SeqIO
 from collections import defaultdict
 
 __author__ = "Desvilles Aurélien"
@@ -85,8 +85,28 @@ def read_fastq(fastq_file):
     :return: A generator object that iterate the read sequences. 
     """
     with open(fastq_file, "r") as handle:
-        for record in SeqIO.parse(handle, "fastq"):
-            yield record
+        seq_id = None
+        sequence = None
+        quality = None
+
+        for line in handle:
+            line = line.strip()
+
+            if not seq_id:
+                seq_id = line
+            elif not sequence:
+                sequence = line
+            elif not quality:
+                quality = line
+            else:
+                # Ensure that all fields are non-empty
+                if seq_id and sequence and quality:
+                    yield (sequence)
+
+                # Reset the variables
+                seq_id = None
+                sequence = None
+                quality = None
 
 
 def cut_kmer(read, kmer_size):
@@ -105,18 +125,13 @@ def build_kmer_dict(fastq_file, kmer_size):
     :param fastq_file: (str) Path to the fastq file.
     :return: A dictionnary object that identify all kmer occurrences.
     """
-    # Initialise un dictionnaire pour stocker les k-mers et leur nombre d'occurrences
-    kmer_dict = defaultdict(int)
+    kmer_counts = {}
 
-    # Utilise la fonction read_fastq pour lire le fichier FASTQ et obtenir un générateur de séquences
-    sequences = read_fastq(fastq_file)
+    for sequence in read_fastq(fastq_file):
+        for kmer in cut_kmer(sequence, kmer_size):
+            kmer_counts[kmer] = kmer_counts.get(kmer, 0) + 1
 
-    # Parcourt les séquences et découpe en k-mers, en comptant les occurrences
-    for sequence in sequences:
-        for kmer in cut_kmer(sequence.seq, kmer_size):
-            kmer_dict[kmer] += 1
-
-    return kmer_dict
+    return kmer_counts
 
 
 def build_graph(kmer_dict):
@@ -154,18 +169,21 @@ def remove_paths(graph, path_list, delete_entry_node = True, delete_sink_node = 
     :param delete_sink_node: (boolean) True->We remove the last node of a path
     :return: (nx.DiGraph) A directed graph object
     """
+    
+    modified_graph = graph.copy()
+
     for path in path_list:
+        if delete_entry_node:
+            modified_graph.remove_node(path[0])
+        if delete_sink_node:
+            modified_graph.remove_node(path[-1])
+
         for i in range(len(path) - 1):
             source_node = path[i]
             target_node = path[i + 1]
-            if graph.has_edge(source_node, target_node):
-                graph.remove_edge(source_node, target_node)
-        
-        if delete_entry_node:
-            graph.remove_node(path[0])
+            modified_graph.remove_edge(source_node, target_node)
 
-        if delete_sink_node:
-            graph.remove_node(path[-1])
+    return modified_graph
 
 
 def select_best_path(graph, path_list, path_lengths, weight_avg_list, 
@@ -182,27 +200,27 @@ def select_best_path(graph, path_list, path_lengths, weight_avg_list,
     """
     paths_to_remove = set()
 
-    # Comparaison des chemins
+    
     stdev_weights = stdev(weight_avg_list)
     stdev_lengths = stdev(path_lengths)
 
     for i in range(len(path_list)):
         path = path_list[i]
         if stdev_weights > 0:
-            # Si l'écart type des poids est supérieur à 0, sélectionner le chemin avec le poids le plus élevé
+            
             if weight_avg_list[i] < max(weight_avg_list):
                 paths_to_remove.add(tuple(path))
         elif stdev_lengths > 0:
-            # Si l'écart type des longueurs est supérieur à 0, sélectionner le chemin le plus long
+            
             if path_lengths[i] < max(path_lengths):
                 paths_to_remove.add(tuple(path))
     
     if not paths_to_remove:
-        # Si les chemins sont équivalents, faire un choix aléatoire
+        
         random_index = random.randint(0, len(path_list) - 1)
         paths_to_remove = set([tuple(path_list[random_index])])
 
-    # Suppression des chemins indésirables
+    
     for path in paths_to_remove:
         for i in range(len(path) - 1):
             source_node = path[i]
@@ -235,17 +253,17 @@ def solve_bubble(graph, ancestor_node, descendant_node):
     :param descendant_node: (str) A downstream node in the graph
     :return: (nx.DiGraph) A directed graph object
     """
-    # Trouver tous les chemins entre l'ancêtre et le descendant
+    
     paths_between_nodes = list(nx.all_simple_paths(graph, source=ancestor_node, target=descendant_node))
 
     if not paths_between_nodes:
-        return graph  # Pas de chemin entre l'ancêtre et le descendant, rien à résoudre
+        return graph  
 
-    # Collecter les informations sur les chemins
+    
     path_lengths = [len(path) for path in paths_between_nodes]
     path_weights = [sum(graph[source][target]['weight'] for source, target in zip(path, path[1:])) for path in paths_between_nodes]
 
-    # Sélectionner le meilleur chemin et nettoyer le graphe
+    
     cleaned_graph = select_best_path(graph, paths_between_nodes, path_lengths, path_weights, delete_entry_node=True, delete_sink_node=True)
 
     return cleaned_graph
@@ -268,7 +286,7 @@ def find_bubble(graph):
         if len(predecessors) == 1 and len(successors) == 1 and predecessors[0] != successors[0]:
             return predecessors[0], successors[0]
 
-    return None, None  # Aucune bulle trouvée
+    return None, None  
 
 
 def simplify_bubbles(graph):
@@ -277,20 +295,26 @@ def simplify_bubbles(graph):
     :param graph: (nx.DiGraph) A directed graph object
     :return: (nx.DiGraph) A directed graph object
     """
-    simplified_graph = graph.copy()
+    bubble = False
+    
+    for node in graph.nodes():
+        predecessors = list(graph.predecessors(node))
+        if len(predecessors) > 1:
+            for i in range(len(predecessors)):
+                for j in range(i+1, len(predecessors)):
+                    node_ancestor = nx.lowest_common_ancestor(graph, predecessors[i], predecessors[j])
+                    if node_ancestor is not None:
+                        bubble = True
+                        break
+                if bubble:
+                    break
+            if bubble:
+                break
 
-    while True:
-        # Rechercher un nœud ancêtre et un nœud descendant pour une bulle potentielle
-        ancestor_node, descendant_node = find_bubble(simplified_graph)
-
-        if ancestor_node is None or descendant_node is None:
-            # Aucune bulle trouvée, le nettoyage est terminé
-            break
-
-        # Résoudre la bulle
-        simplified_graph = solve_bubble(simplified_graph, ancestor_node, descendant_node)
-
-    return simplified_graph
+    if bubble:
+        graph = simplify_bubbles(solve_bubble(graph, node_ancestor, node))
+    
+    return graph
 
 
 def solve_entry_tips(graph, starting_nodes):
@@ -304,12 +328,12 @@ def solve_entry_tips(graph, starting_nodes):
     for entry_node in starting_nodes:
         predecessors = list(cleaned_graph.predecessors(entry_node))
         if len(predecessors) > 1:
-            # Plusieurs prédécesseurs, supprimer les arcs d'entrée indésirables
+            
             for predecessor in predecessors:
                 if predecessor not in starting_nodes:
                     cleaned_graph.remove_edge(predecessor, entry_node)
         elif len(predecessors) == 1:
-            # Un seul prédécesseur, supprimer le nœud d'entrée indésirable
+            
             cleaned_graph.remove_node(entry_node)
 
     return cleaned_graph
@@ -326,12 +350,12 @@ def solve_out_tips(graph, ending_nodes):
     for out_node in ending_nodes:
         successors = list(cleaned_graph.successors(out_node))
         if len(successors) > 1:
-            # Plusieurs successeurs, supprimer les arcs de sortie indésirables
+            
             for successor in successors:
                 if successor not in ending_nodes:
                     cleaned_graph.remove_edge(out_node, successor)
         elif len(successors) == 1:
-            # Un seul successeur, supprimer le nœud de sortie indésirable
+            
             cleaned_graph.remove_node(out_node)
 
     return cleaned_graph
@@ -366,9 +390,11 @@ def get_contigs(graph, starting_nodes, ending_nodes):
 
     for start_node in starting_nodes:
         for sink_node in ending_nodes:
-            for path in nx.all_simple_paths(graph, source=start_node, target=sink_node):
-                contig = "".join(node for node in path)
-                contig_length = len(contig)
+            paths = list(nx.all_simple_paths(graph, source=start_node, target=sink_node))
+            for path in paths:
+                contig_nodes = [graph.nodes[node]["sequence"] for node in path]
+                contig = "".join(contig_nodes)
+                contig_length = sum(len(node) for node in contig_nodes)
                 contigs.append((contig, contig_length))
 
     return contigs
@@ -380,17 +406,16 @@ def save_contigs(contigs_list, output_file):
     :param output_file: (str) Path to the output file
     """
     with open(output_file, "w") as file:
-        for i, (contigs_list, length) in enumerate(contigs_list, start=1):
-            # Construire l'en-tête FASTA
+        for i, (contig, length) in enumerate(contigs_list, start=1):  
             header = f">Contig_{i} Length={length}\n"
             file.write(header)
 
-            # Écrire la séquence contig avec des lignes de 80 caractères
-            contig_wrapped = textwrap.fill(contigs_list, width=80)
+            
+            contig_wrapped = textwrap.fill(contig, width=80)
             file.write(contig_wrapped + "\n")
 
 
-def draw_graph(graph, graphimg_file): # pragma: no cover
+def draw_graph(graph, graphimg_file): 
     """Draw the graph
 
     :param graph: (nx.DiGraph) A directed graph object
