@@ -14,6 +14,7 @@
 """Perform assembly based on debruijn graph."""
 
 import argparse
+from msilib import sequence
 import os
 import sys
 import networkx as nx
@@ -27,7 +28,6 @@ from statistics import stdev
 import textwrap
 import matplotlib.pyplot as plt
 matplotlib.use("Agg")
-#from Bio import SeqIO
 from collections import defaultdict
 
 __author__ = "Desvilles Aurélien"
@@ -174,9 +174,9 @@ def remove_paths(graph, path_list, delete_entry_node = True, delete_sink_node = 
 
     for path in path_list:
         if delete_entry_node:
-            modified_graph.remove_node(path[0])
+            modified_graph.remove_node_from(path[0])
         if delete_sink_node:
-            modified_graph.remove_node(path[-1])
+            modified_graph.remove_node_from(path[-1])
 
         for i in range(len(path) - 1):
             source_node = path[i]
@@ -198,9 +198,8 @@ def select_best_path(graph, path_list, path_lengths, weight_avg_list,
     :param delete_sink_node: (boolean) True->We remove the last node of a path
     :return: (nx.DiGraph) A directed graph object
     """
-    paths_to_remove = set()
+    paths_to_remove = []
 
-    
     stdev_weights = stdev(weight_avg_list)
     stdev_lengths = stdev(path_lengths)
 
@@ -209,17 +208,16 @@ def select_best_path(graph, path_list, path_lengths, weight_avg_list,
         if stdev_weights > 0:
             
             if weight_avg_list[i] < max(weight_avg_list):
-                paths_to_remove.add(tuple(path))
+                paths_to_remove.append(path)
         elif stdev_lengths > 0:
             
             if path_lengths[i] < max(path_lengths):
-                paths_to_remove.add(tuple(path))
+                paths_to_remove.append(path)
     
     if not paths_to_remove:
         
         random_index = random.randint(0, len(path_list) - 1)
-        paths_to_remove = set([tuple(path_list[random_index])])
-
+        paths_to_remove.pop(random_index)
     
     for path in paths_to_remove:
         for i in range(len(path) - 1):
@@ -267,26 +265,6 @@ def solve_bubble(graph, ancestor_node, descendant_node):
     cleaned_graph = select_best_path(graph, paths_between_nodes, path_lengths, path_weights, delete_entry_node=True, delete_sink_node=True)
 
     return cleaned_graph
-
-def find_bubble(graph):
-    """
-    Recherche un nœud ancêtre et un nœud descendant pour une bulle potentielle dans le graphe.
-
-    Args:
-        graph (nx.DiGraph): Le graphe dirigé.
-
-    Returns:
-        ancestor_node: Le nœud ancêtre de la bulle.
-        descendant_node: Le nœud descendant de la bulle.
-    """
-    for node in graph.nodes():
-        predecessors = list(graph.predecessors(node))
-        successors = list(graph.successors(node))
-
-        if len(predecessors) == 1 and len(successors) == 1 and predecessors[0] != successors[0]:
-            return predecessors[0], successors[0]
-
-    return None, None  
 
 
 def simplify_bubbles(graph):
@@ -390,13 +368,12 @@ def get_contigs(graph, starting_nodes, ending_nodes):
 
     for start_node in starting_nodes:
         for sink_node in ending_nodes:
-            paths = list(nx.all_simple_paths(graph, source=start_node, target=sink_node))
+            paths = nx.all_simple_paths(graph, source=start_node, target=sink_node)
+            sequence = []
             for path in paths:
-                contig_nodes = [graph.nodes[node]["sequence"] for node in path]
-                contig = "".join(contig_nodes)
-                contig_length = sum(len(node) for node in contig_nodes)
-                contigs.append((contig, contig_length))
-
+                sequence = path[0]
+                sequence += sum(node for node in path[1:])
+                contigs.append((sequence, len(sequence)))
     return contigs
 
 def save_contigs(contigs_list, output_file):
@@ -409,8 +386,6 @@ def save_contigs(contigs_list, output_file):
         for i, (contig, length) in enumerate(contigs_list, start=1):  
             header = f">Contig_{i} Length={length}\n"
             file.write(header)
-
-            
             contig_wrapped = textwrap.fill(contig, width=80)
             file.write(contig_wrapped + "\n")
 
